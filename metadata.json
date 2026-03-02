@@ -1,0 +1,8 @@
+{
+  "name": "Wirtualne Podchody",
+  "description": "Aplikacja do tworzenia i brania udziału w wirtualnych podchodach terenowych z wykorzystaniem geolokalizacji.",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera"
+  ]
+}
