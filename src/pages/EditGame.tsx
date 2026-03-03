@@ -1,12 +1,11 @@
-import React, { useState, useCallback, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { Plus, Save, Trash2, Navigation, Map as MapIcon, GripVertical, Info, Search, Crosshair, Image as ImageIcon } from "lucide-react";
+import React, { useState, useCallback, useEffect } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { Plus, Save, Trash2, Navigation, GripVertical, Info, Search, Crosshair, Image as ImageIcon } from "lucide-react";
 import { MapContainer, TileLayer, Marker, useMapEvents, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { Reorder } from "motion/react";
 import { useAppContext } from "../contexts/AppContext";
 
-// Fix for default marker icons in Leaflet
 const DefaultIcon = L.icon({
     iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
     shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
@@ -17,15 +16,16 @@ const DefaultIcon = L.icon({
 L.Marker.prototype.options.icon = DefaultIcon;
 
 interface Point {
-  id: string;
+  id: string | number;
   name: string;
   description: string;
   latitude: number;
   longitude: number;
   attachment?: File | null;
+  attachment_url?: string | null;
+  isNew?: boolean;
 }
 
-// Component to handle map view changes
 function ChangeView({ center, zoom }: { center: [number, number]; zoom?: number }) {
   const map = useMap();
   useEffect(() => {
@@ -43,15 +43,19 @@ function MapEvents({ onMapClick }: { onMapClick: (lat: number, lng: number) => v
   return null;
 }
 
-export default function CreateGame() {
+export default function EditGame() {
+  const { id } = useParams<{ id: string }>();
   const { t, theme, user, token } = useAppContext();
   const navigate = useNavigate();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [editPassword, setEditPassword] = useState("");
   const [gameAttachment, setGameAttachment] = useState<File | null>(null);
+  const [existingAttachmentUrl, setExistingAttachmentUrl] = useState<string | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
+  const [deletedPointIds, setDeletedPointIds] = useState<number[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [selectedPointIndex, setSelectedPointIndex] = useState<number | null>(null);
   const [mapCenter, setMapCenter] = useState<[number, number]>([52.2297, 21.0122]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -62,8 +66,42 @@ export default function CreateGame() {
   useEffect(() => {
     if (!token) {
       navigate("/login");
+      return;
     }
-  }, [token, navigate]);
+
+    const fetchGame = async () => {
+      try {
+        const response = await fetch(`/api/games/${id}`);
+        if (!response.ok) throw new Error("Failed to fetch game");
+        const data = await response.json();
+        
+        if (data.creator_id !== user?.id) {
+          navigate("/catalog");
+          return;
+        }
+
+        setTitle(data.title);
+        setDescription(data.description || "");
+        setEditPassword(data.edit_password || "");
+        setMapCenter([data.latitude, data.longitude]);
+        setExistingAttachmentUrl(data.attachment_url);
+        
+        const pointsData = data.points.map((p: any) => ({
+          ...p,
+          isNew: false
+        }));
+        setPoints(pointsData);
+        
+      } catch (error) {
+        console.error("Error fetching game:", error);
+        navigate("/catalog");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchGame();
+  }, [id, token, navigate, user]);
 
   const addPoint = useCallback(() => {
     const lastPoint = points[points.length - 1];
@@ -73,7 +111,8 @@ export default function CreateGame() {
       description: "",
       latitude: lastPoint ? lastPoint.latitude + 0.0005 : mapCenter[0],
       longitude: lastPoint ? lastPoint.longitude + 0.0005 : mapCenter[1],
-      attachment: null
+      attachment: null,
+      isNew: true
     };
     setPoints([...points, newPoint]);
     setSelectedPointIndex(points.length);
@@ -81,6 +120,11 @@ export default function CreateGame() {
   }, [points, mapCenter, t]);
 
   const removePoint = (index: number) => {
+    const pointToRemove = points[index];
+    if (!pointToRemove.isNew && typeof pointToRemove.id === 'number') {
+      setDeletedPointIds([...deletedPointIds, pointToRemove.id]);
+    }
+    
     const newPoints = points.filter((_, i) => i !== index);
     setPoints(newPoints);
     if (selectedPointIndex === index) {
@@ -142,7 +186,8 @@ export default function CreateGame() {
       description: searchResult.name,
       latitude: searchResult.lat,
       longitude: searchResult.lon,
-      attachment: null
+      attachment: null,
+      isNew: true
     };
     setPoints([...points, newPoint]);
     setSelectedPointIndex(points.length);
@@ -171,50 +216,79 @@ export default function CreateGame() {
       gameFormData.append("edit_password", editPassword);
       gameFormData.append("latitude", points[0].latitude.toString());
       gameFormData.append("longitude", points[0].longitude.toString());
-      if (user) {
-        gameFormData.append("creator_id", user.id.toString());
-      }
       if (gameAttachment) {
         gameFormData.append("attachment", gameAttachment);
       }
 
-      const gameResponse = await fetch("/api/games", {
-        method: "POST",
+      const gameResponse = await fetch(`/api/games/${id}`, {
+        method: "PUT",
         headers: {
           "Authorization": `Bearer ${token}`
         },
         body: gameFormData,
       });
-      const gameData = await gameResponse.json();
+      
+      if (!gameResponse.ok) throw new Error("Failed to update game");
 
-      for (let i = 0; i < points.length; i++) {
-        const pointFormData = new FormData();
-        pointFormData.append("name", points[i].name);
-        pointFormData.append("description", points[i].description);
-        pointFormData.append("latitude", points[i].latitude.toString());
-        pointFormData.append("longitude", points[i].longitude.toString());
-        pointFormData.append("order_index", i.toString());
-        if (points[i].attachment) {
-          pointFormData.append("attachment", points[i].attachment as File);
-        }
-
-        await fetch(`/api/games/${gameData.id}/points`, {
-          method: "POST",
+      // Delete removed points
+      for (const pointId of deletedPointIds) {
+        await fetch(`/api/points/${pointId}`, {
+          method: "DELETE",
           headers: {
             "Authorization": `Bearer ${token}`
-          },
-          body: pointFormData,
+          }
         });
       }
 
-      navigate("/catalog");
+      // Update or create points
+      for (let i = 0; i < points.length; i++) {
+        const point = points[i];
+        const pointFormData = new FormData();
+        pointFormData.append("name", point.name);
+        pointFormData.append("description", point.description);
+        pointFormData.append("latitude", point.latitude.toString());
+        pointFormData.append("longitude", point.longitude.toString());
+        pointFormData.append("order_index", i.toString());
+        if (point.attachment) {
+          pointFormData.append("attachment", point.attachment as File);
+        }
+
+        if (point.isNew) {
+          await fetch(`/api/games/${id}/points`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${token}`
+            },
+            body: pointFormData,
+          });
+        } else {
+          await fetch(`/api/points/${point.id}`, {
+            method: "PUT",
+            headers: {
+              "Authorization": `Bearer ${token}`
+            },
+            body: pointFormData,
+          });
+        }
+      }
+
+      navigate(`/game/${id}`);
     } catch (error) {
-      console.error("Failed to create game:", error);
+      console.error("Failed to update game:", error);
       alert(t('create.create_error'));
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="max-w-5xl mx-auto space-y-6 animate-pulse">
+        <div className="h-12 bg-stone-200 dark:bg-stone-800 rounded-xl w-1/3"></div>
+        <div className="h-64 bg-stone-200 dark:bg-stone-800 rounded-3xl"></div>
+      </div>
+    );
+  }
 
   const selectedPoint = selectedPointIndex !== null ? points[selectedPointIndex] : null;
 
@@ -222,7 +296,7 @@ export default function CreateGame() {
     <div className="max-w-5xl mx-auto space-y-6 pb-24 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div className="flex-1 space-y-4">
-          <h1 className="text-3xl font-bold text-stone-900 dark:text-white">{t('create.title')}</h1>
+          <h1 className="text-3xl font-bold text-stone-900 dark:text-white">{t('edit.title') || 'Edytuj grę'}</h1>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <input
               required
@@ -251,6 +325,9 @@ export default function CreateGame() {
               <ImageIcon className="w-4 h-4" />
               {t('create.game_image')}
             </label>
+            {existingAttachmentUrl && !gameAttachment && (
+              <div className="mb-2 text-xs text-stone-500">Obecne zdjęcie: {existingAttachmentUrl.split('/').pop()}</div>
+            )}
             <input 
               type="file" 
               accept="image/*"
@@ -420,6 +497,9 @@ export default function CreateGame() {
                   <ImageIcon className="w-4 h-4" />
                   {t('create.point_image')}
                 </label>
+                {selectedPoint.attachment_url && !selectedPoint.attachment && (
+                  <div className="mb-2 text-xs text-stone-500">Obecne zdjęcie: {selectedPoint.attachment_url.split('/').pop()}</div>
+                )}
                 <input 
                   type="file" 
                   accept="image/*"
@@ -493,7 +573,7 @@ export default function CreateGame() {
                   {point.latitude.toFixed(6)}, {point.longitude.toFixed(6)}
                 </div>
               </div>
-              {point.attachment && (
+              {(point.attachment || point.attachment_url) && (
                 <div className="text-emerald-600 dark:text-emerald-500" title="Zawiera załącznik">
                   <ImageIcon className="w-5 h-5" />
                 </div>

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { MapPin, Navigation, CheckCircle, Trophy, Info, Camera, X, Compass as CompassIcon } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { useAppContext } from "../contexts/AppContext";
 
 interface Point {
   id: number;
@@ -10,6 +11,7 @@ interface Point {
   latitude: number;
   longitude: number;
   order_index: number;
+  attachment_url?: string;
 }
 
 interface Game {
@@ -19,9 +21,11 @@ interface Game {
 }
 
 export default function PlayGame() {
+  const { t, language, token } = useAppContext();
   const { id } = useParams();
   const navigate = useNavigate();
   const [game, setGame] = useState<Game | null>(null);
+  const [sessionId, setSessionId] = useState<number | null>(null);
   const [currentPointIndex, setCurrentPointIndex] = useState(0);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [distanceToTarget, setDistanceToTarget] = useState<number | null>(null);
@@ -35,16 +39,49 @@ export default function PlayGame() {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
-    const fetchGame = async () => {
+    if (!token) {
+      navigate("/login");
+      return;
+    }
+
+    const initGame = async () => {
       try {
-        const response = await fetch(`/api/games/${id}`);
-        const data = await response.json();
-        setGame(data);
+        // Fetch game details
+        const gameRes = await fetch(`/api/games/${id}`);
+        const gameData = await gameRes.json();
+        setGame(gameData);
+
+        // Fetch or create session
+        const sessionRes = await fetch(`/api/games/${id}/sessions/current`, {
+          headers: { "Authorization": `Bearer ${token}` }
+        });
+        const sessionData = await sessionRes.json();
+
+        if (sessionData.session) {
+          setSessionId(sessionData.session.id);
+          // Set current point index based on progress
+          if (sessionData.progress && sessionData.progress.length > 0) {
+            const nextIndex = sessionData.progress.length;
+            if (nextIndex >= gameData.points.length) {
+              setIsGameFinished(true);
+            } else {
+              setCurrentPointIndex(nextIndex);
+            }
+          }
+        } else {
+          // Start new session
+          const startRes = await fetch(`/api/games/${id}/sessions`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${token}` }
+          });
+          const startData = await startRes.json();
+          setSessionId(startData.sessionId);
+        }
       } catch (error) {
-        console.error("Failed to fetch game:", error);
+        console.error("Failed to initialize game:", error);
       }
     };
-    fetchGame();
+    initGame();
 
     if ("geolocation" in navigator) {
       watchId.current = navigator.geolocation.watchPosition(
@@ -63,11 +100,10 @@ export default function PlayGame() {
       if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
       stopCamera();
     };
-  }, [id]);
+  }, [id, token, navigate]);
 
   useEffect(() => {
     const handleOrientation = (event: DeviceOrientationEvent) => {
-      // Use webkitCompassHeading for iOS, or alpha for Android (though alpha is not absolute north)
       let heading = (event as any).webkitCompassHeading || (360 - (event.alpha || 0));
       if (heading !== undefined) {
         setDeviceHeading(heading);
@@ -92,7 +128,7 @@ export default function PlayGame() {
   };
 
   useEffect(() => {
-    if (game && userLocation && !isGameFinished) {
+    if (game && userLocation && !isGameFinished && sessionId) {
       const target = game.points[currentPointIndex];
       const dist = calculateDistance(userLocation.lat, userLocation.lng, target.latitude, target.longitude);
       const bearing = calculateBearing(userLocation.lat, userLocation.lng, target.latitude, target.longitude);
@@ -102,15 +138,35 @@ export default function PlayGame() {
 
       // If within 10 meters (0.01 km)
       if (dist < 0.01) {
-        if (currentPointIndex < game.points.length - 1) {
-          setCurrentPointIndex(currentPointIndex + 1);
-          alert(`Znalazłeś punkt: ${target.name}! Teraz szukaj kolejnego.`);
-        } else {
-          setIsGameFinished(true);
-        }
+        const recordProgress = async () => {
+          try {
+            await fetch(`/api/sessions/${sessionId}/progress`, {
+              method: "POST",
+              headers: { 
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${token}` 
+              },
+              body: JSON.stringify({ point_id: target.id })
+            });
+
+            if (currentPointIndex < game.points.length - 1) {
+              setCurrentPointIndex(currentPointIndex + 1);
+              alert(language === 'pl' ? `Znalazłeś punkt: ${target.name}! Teraz szukaj kolejnego.` : `Found point: ${target.name}! Now look for the next one.`);
+            } else {
+              await fetch(`/api/sessions/${sessionId}/complete`, {
+                method: "PUT",
+                headers: { "Authorization": `Bearer ${token}` }
+              });
+              setIsGameFinished(true);
+            }
+          } catch (err) {
+            console.error("Failed to record progress", err);
+          }
+        };
+        recordProgress();
       }
     }
-  }, [userLocation, game, currentPointIndex, isGameFinished]);
+  }, [userLocation, game, currentPointIndex, isGameFinished, language, sessionId, token]);
 
   const startCamera = async () => {
     try {
@@ -123,7 +179,7 @@ export default function PlayGame() {
       setIsARMode(true);
     } catch (err) {
       console.error("Error accessing camera:", err);
-      alert("Nie udało się uruchomić aparatu.");
+      alert(language === 'pl' ? "Nie udało się uruchomić aparatu." : "Failed to start camera.");
     }
   };
 
@@ -161,34 +217,33 @@ export default function PlayGame() {
   const deg2rad = (deg: number) => deg * (Math.PI / 180);
   const rad2deg = (rad: number) => rad * (180 / Math.PI);
 
-  if (!game) return <div className="text-center py-12">Ładowanie gry...</div>;
+  if (!game) return <div className="text-center py-12 dark:text-stone-300">{t('play.loading')}</div>;
 
   if (isGameFinished) {
     return (
-      <div className="max-w-md mx-auto text-center space-y-8 py-12">
-        <div className="w-24 h-24 bg-yellow-100 text-yellow-600 rounded-full flex items-center justify-center mx-auto">
+      <div className="max-w-md mx-auto text-center space-y-8 py-12 animate-in fade-in duration-500">
+        <div className="w-24 h-24 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-500 rounded-full flex items-center justify-center mx-auto shadow-lg">
           <Trophy className="w-12 h-12" />
         </div>
         <div className="space-y-2">
-          <h1 className="text-4xl font-bold text-stone-900">Gratulacje!</h1>
-          <p className="text-stone-600 text-lg">Ukończyłeś grę: <span className="font-bold">{game.title}</span></p>
+          <h1 className="text-4xl font-bold text-stone-900 dark:text-white">{t('play.congrats')}</h1>
+          <p className="text-stone-600 dark:text-stone-300 text-lg">{t('play.congrats_desc')} <span className="font-bold text-emerald-600 dark:text-emerald-400">{game.title}</span></p>
         </div>
         <button
           onClick={() => navigate("/catalog")}
-          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-2xl shadow-lg transition-all"
+          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-2xl shadow-lg transition-all hover:-translate-y-1"
         >
-          Wróć do katalogu
+          {t('play.back_to_catalog')}
         </button>
       </div>
     );
   }
 
   const currentPoint = game.points[currentPointIndex];
-  // Arrow rotation relative to device heading
   const arrowRotation = deviceHeading !== null ? (bearingToTarget - deviceHeading) : bearingToTarget;
 
   return (
-    <div className="fixed inset-0 bg-stone-100 flex flex-col overflow-hidden">
+    <div className="fixed inset-0 bg-stone-100 dark:bg-stone-900 flex flex-col overflow-hidden transition-colors duration-300">
       {/* AR View Background */}
       <AnimatePresence>
         {isARMode && (
@@ -210,39 +265,36 @@ export default function PlayGame() {
 
       {/* Top Section: Compass & Distance */}
       <div className="relative z-10 p-6 flex flex-col items-center space-y-4 pt-12">
-        <div className="bg-white/90 backdrop-blur-md p-6 rounded-3xl shadow-xl border border-white/20 flex flex-col items-center w-full max-w-xs">
+        <div className="bg-white/90 dark:bg-stone-800/90 backdrop-blur-md p-6 rounded-3xl shadow-xl border border-white/20 dark:border-stone-700/50 flex flex-col items-center w-full max-w-xs transition-colors duration-300">
           <div className="relative w-32 h-32 flex items-center justify-center mb-4">
-            {/* Compass Ring */}
-            <div className="absolute inset-0 border-4 border-stone-100 rounded-full" />
+            <div className="absolute inset-0 border-4 border-stone-100 dark:border-stone-700 rounded-full transition-colors duration-300" />
             
-            {/* Direction Arrow */}
             <motion.div 
               animate={{ rotate: arrowRotation }}
               transition={{ type: "spring", stiffness: 100, damping: 15 }}
-              className="relative z-10 text-emerald-600"
+              className="relative z-10 text-emerald-600 dark:text-emerald-500"
             >
               <Navigation className="w-16 h-16 fill-current" />
             </motion.div>
 
-            {/* North Indicator (if heading available) */}
             {deviceHeading !== null && (
               <motion.div 
                 animate={{ rotate: -deviceHeading }}
                 className="absolute inset-0 flex flex-col items-center pt-1"
               >
-                <span className="text-[10px] font-black text-red-500">N</span>
+                <span className="text-[10px] font-black text-red-500 dark:text-red-400">N</span>
               </motion.div>
             )}
           </div>
 
           <div className="text-center">
-            <div className="text-4xl font-black text-stone-900">
+            <div className="text-4xl font-black text-stone-900 dark:text-white transition-colors duration-300">
               {distanceToTarget !== null ? (
-                distanceToTarget < 1 ? `${(distanceToTarget * 1000).toFixed(0)} m` : `${distanceToTarget.toFixed(2)} km`
+                distanceToTarget < 0.01 ? "!!!" : (distanceToTarget < 1 ? `${(distanceToTarget * 1000).toFixed(0)} m` : `${distanceToTarget.toFixed(2)} km`)
               ) : "---"}
             </div>
-            <div className="text-xs font-bold text-stone-400 uppercase tracking-widest mt-1">
-              Dystans do celu
+            <div className="text-xs font-bold text-stone-400 dark:text-stone-500 uppercase tracking-widest mt-1 transition-colors duration-300">
+              {t('play.distance')}
             </div>
           </div>
         </div>
@@ -251,14 +303,16 @@ export default function PlayGame() {
           {!isARMode ? (
             <button 
               onClick={startCamera}
-              className="bg-white/90 backdrop-blur-md p-3 rounded-full shadow-lg border border-white/20 text-stone-700 hover:text-emerald-600 transition-colors"
+              className="bg-white/90 dark:bg-stone-800/90 backdrop-blur-md p-3 rounded-full shadow-lg border border-white/20 dark:border-stone-700/50 text-stone-700 dark:text-stone-300 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+              title={t('play.ar_view')}
             >
               <Camera className="w-6 h-6" />
             </button>
           ) : (
             <button 
               onClick={stopCamera}
-              className="bg-red-500 p-3 rounded-full shadow-lg text-white transition-colors"
+              className="bg-red-500 p-3 rounded-full shadow-lg text-white transition-colors hover:bg-red-600"
+              title={t('play.map_view')}
             >
               <X className="w-6 h-6" />
             </button>
@@ -267,7 +321,8 @@ export default function PlayGame() {
           {hasOrientationPermission === null && (
             <button 
               onClick={requestOrientationPermission}
-              className="bg-white/90 backdrop-blur-md p-3 rounded-full shadow-lg border border-white/20 text-stone-700 hover:text-emerald-600 transition-colors"
+              className="bg-white/90 dark:bg-stone-800/90 backdrop-blur-md p-3 rounded-full shadow-lg border border-white/20 dark:border-stone-700/50 text-stone-700 dark:text-stone-300 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+              title="Request Compass Permission"
             >
               <CompassIcon className="w-6 h-6" />
             </button>
@@ -280,25 +335,37 @@ export default function PlayGame() {
         <motion.div 
           initial={{ y: 50, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          className="bg-white/90 backdrop-blur-md p-6 rounded-3xl shadow-xl border border-white/20"
+          className="bg-white/90 dark:bg-stone-800/90 backdrop-blur-md p-6 rounded-3xl shadow-xl border border-white/20 dark:border-stone-700/50 transition-colors duration-300"
         >
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center font-black text-sm">
+              <div className="w-8 h-8 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 rounded-full flex items-center justify-center font-black text-sm transition-colors duration-300">
                 {currentPointIndex + 1}
               </div>
-              <h3 className="font-bold text-stone-900">{currentPoint.name}</h3>
+              <h3 className="font-bold text-stone-900 dark:text-white transition-colors duration-300">{currentPoint.name}</h3>
             </div>
-            <div className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">
-              Punkt {currentPointIndex + 1} / {game.points.length}
+            <div className="text-[10px] font-bold text-stone-400 dark:text-stone-500 uppercase tracking-widest transition-colors duration-300">
+              {t('play.point')} {currentPointIndex + 1} {t('play.of')} {game.points.length}
             </div>
           </div>
 
-          <div className="flex items-start gap-3 p-4 bg-stone-50/50 rounded-2xl border border-stone-100">
-            <Info className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
-            <p className="text-stone-600 text-sm italic leading-relaxed">
-              {currentPoint.description || "Brak dodatkowych wskazówek dla tego punktu."}
-            </p>
+          <div className="flex flex-col md:flex-row gap-4">
+            <div className="flex-1 flex items-start gap-3 p-4 bg-stone-50/50 dark:bg-stone-900/50 rounded-2xl border border-stone-100 dark:border-stone-700/50 transition-colors duration-300">
+              <Info className="w-5 h-5 text-emerald-600 dark:text-emerald-500 flex-shrink-0 mt-0.5" />
+              <p className="text-stone-600 dark:text-stone-300 text-sm italic leading-relaxed transition-colors duration-300">
+                {currentPoint.description || (language === 'pl' ? "Brak dodatkowych wskazówek dla tego punktu." : "No additional clues for this point.")}
+              </p>
+            </div>
+            {currentPoint.attachment_url && (
+              <div className="w-full md:w-32 h-32 rounded-2xl overflow-hidden border border-stone-100 dark:border-stone-700 shadow-sm flex-shrink-0">
+                <img 
+                  src={currentPoint.attachment_url} 
+                  alt={currentPoint.name}
+                  className="w-full h-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+            )}
           </div>
         </motion.div>
 
@@ -308,8 +375,8 @@ export default function PlayGame() {
             <div 
               key={index}
               className={`h-1.5 flex-1 rounded-full transition-all duration-500 ${
-                index < currentPointIndex ? "bg-emerald-500" : 
-                index === currentPointIndex ? "bg-emerald-300 animate-pulse" : "bg-stone-300"
+                index < currentPointIndex ? "bg-emerald-500 dark:bg-emerald-600" : 
+                index === currentPointIndex ? "bg-emerald-300 dark:bg-emerald-400 animate-pulse" : "bg-stone-300 dark:bg-stone-700"
               }`}
             />
           ))}

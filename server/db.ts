@@ -26,6 +26,7 @@ db.exec(`
     latitude REAL,
     longitude REAL,
     is_public BOOLEAN DEFAULT 1,
+    attachment_url TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (creator_id) REFERENCES users(id)
   );
@@ -60,6 +61,25 @@ db.exec(`
     FOREIGN KEY (session_id) REFERENCES game_sessions(id),
     FOREIGN KEY (point_id) REFERENCES points(id)
   );
+
+  CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
+    comment TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (game_id) REFERENCES games(id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(game_id, user_id)
+  );
 `);
+
+// Try to add attachment_url to existing games table if it doesn't exist
+try {
+  db.exec("ALTER TABLE games ADD COLUMN attachment_url TEXT;");
+} catch (e) {
+  // Column might already exist, ignore error
+}
 
 export default db;
