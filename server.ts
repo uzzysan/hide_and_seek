@@ -113,6 +113,23 @@ async function startServer() {
     res.json({ user: req.user });
   });
 
+  app.get("/api/me/stats", authenticateToken, (req: any, res: any) => {
+    try {
+      const completedGames = db.prepare("SELECT COUNT(*) as count FROM game_sessions WHERE user_id = ? AND completed_at IS NOT NULL").get(req.user.id) as any;
+      const reviews = db.prepare("SELECT COUNT(*) as count FROM reviews WHERE user_id = ?").get(req.user.id) as any;
+      const createdGames = db.prepare("SELECT COUNT(*) as count FROM games WHERE creator_id = ?").get(req.user.id) as any;
+      
+      res.json({
+        completed_games: completedGames.count,
+        reviews: reviews.count,
+        created_games: createdGames.count
+      });
+    } catch (error) {
+      console.error("Failed to fetch user stats:", error);
+      res.status(500).json({ error: "Failed to fetch user stats" });
+    }
+  });
+
   app.get("/api/me/games", authenticateToken, (req: any, res: any) => {
     try {
       const games = db.prepare("SELECT * FROM games WHERE creator_id = ? ORDER BY created_at DESC").all(req.user.id);
@@ -161,14 +178,14 @@ async function startServer() {
   });
 
   app.post("/api/games", authenticateToken, upload.single("attachment"), (req: any, res: any) => {
-    const { title, description, edit_password, latitude, longitude } = req.body;
+    const { title, description, edit_password, latitude, longitude, time_limit_minutes } = req.body;
     const creator_id = req.user.id;
     const attachment_url = req.file ? `/uploads/${req.file.filename}` : null;
     
     try {
       const result = db.prepare(
-        "INSERT INTO games (title, description, creator_id, edit_password, latitude, longitude, attachment_url) VALUES (?, ?, ?, ?, ?, ?, ?)"
-      ).run(title, description, creator_id, edit_password, latitude, longitude, attachment_url);
+        "INSERT INTO games (title, description, creator_id, edit_password, latitude, longitude, attachment_url, time_limit_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(title, description, creator_id, edit_password, latitude, longitude, attachment_url, time_limit_minutes || null);
       
       res.json({ id: result.lastInsertRowid });
     } catch (error) {
@@ -358,7 +375,7 @@ async function startServer() {
   app.put("/api/games/:id", authenticateToken, upload.single("attachment"), (req: any, res: any) => {
     const gameId = req.params.id;
     const userId = req.user.id;
-    const { title, description, edit_password, latitude, longitude } = req.body;
+    const { title, description, edit_password, latitude, longitude, time_limit_minutes } = req.body;
     
     try {
       const game = db.prepare("SELECT * FROM games WHERE id = ?").get(gameId) as any;
@@ -374,8 +391,8 @@ async function startServer() {
       }
       
       db.prepare(
-        "UPDATE games SET title = ?, description = ?, edit_password = ?, latitude = ?, longitude = ?, attachment_url = ? WHERE id = ?"
-      ).run(title, description, edit_password, latitude, longitude, attachment_url, gameId);
+        "UPDATE games SET title = ?, description = ?, edit_password = ?, latitude = ?, longitude = ?, attachment_url = ?, time_limit_minutes = ? WHERE id = ?"
+      ).run(title, description, edit_password, latitude, longitude, attachment_url, time_limit_minutes || null, gameId);
       
       res.json({ success: true });
     } catch (error) {

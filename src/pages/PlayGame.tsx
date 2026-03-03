@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { MapPin, Navigation, CheckCircle, Trophy, Info, Camera, X, Compass as CompassIcon } from "lucide-react";
+import { MapPin, Navigation, CheckCircle, Trophy, Info, Camera, X, Compass as CompassIcon, Clock } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { useAppContext } from "../contexts/AppContext";
 
@@ -18,6 +18,7 @@ interface Game {
   id: number;
   title: string;
   points: Point[];
+  time_limit_minutes?: number;
 }
 
 export default function PlayGame() {
@@ -34,9 +35,46 @@ export default function PlayGame() {
   const [isGameFinished, setIsGameFinished] = useState(false);
   const [isARMode, setIsARMode] = useState(false);
   const [hasOrientationPermission, setHasOrientationPermission] = useState<boolean | null>(null);
+  const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
+  const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
   
   const watchId = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Timer effect
+  useEffect(() => {
+    if (!game?.time_limit_minutes || !sessionStartedAt || isGameFinished) return;
+
+    const interval = setInterval(() => {
+      const start = new Date(sessionStartedAt).getTime();
+      const now = new Date().getTime();
+      const limitMs = game.time_limit_minutes! * 60 * 1000;
+      const elapsed = now - start;
+      const remaining = Math.max(0, limitMs - elapsed);
+      
+      setTimeRemaining(Math.floor(remaining / 1000));
+
+      if (remaining <= 0) {
+        setIsGameFinished(true);
+        if (sessionId && token) {
+          fetch(`/api/sessions/${sessionId}/complete`, {
+            method: "PUT",
+            headers: { "Authorization": `Bearer ${token}` }
+          }).catch(err => console.error("Failed to record timeout", err));
+        }
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [game, sessionStartedAt, isGameFinished, sessionId, token]);
+
+  const formatTime = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
 
   useEffect(() => {
     if (!token) {
@@ -59,6 +97,7 @@ export default function PlayGame() {
 
         if (sessionData.session) {
           setSessionId(sessionData.session.id);
+          setSessionStartedAt(sessionData.session.started_at);
           // Set current point index based on progress
           if (sessionData.progress && sessionData.progress.length > 0) {
             const nextIndex = sessionData.progress.length;
@@ -76,6 +115,7 @@ export default function PlayGame() {
           });
           const startData = await startRes.json();
           setSessionId(startData.sessionId);
+          setSessionStartedAt(new Date().toISOString());
         }
       } catch (error) {
         console.error("Failed to initialize game:", error);
@@ -220,14 +260,19 @@ export default function PlayGame() {
   if (!game) return <div className="text-center py-12 dark:text-stone-300">{t('play.loading')}</div>;
 
   if (isGameFinished) {
+    const isTimeout = timeRemaining === 0;
     return (
       <div className="max-w-md mx-auto text-center space-y-8 py-12 animate-in fade-in duration-500">
-        <div className="w-24 h-24 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-500 rounded-full flex items-center justify-center mx-auto shadow-lg">
-          <Trophy className="w-12 h-12" />
+        <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto shadow-lg ${isTimeout ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-500' : 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-500'}`}>
+          {isTimeout ? <Clock className="w-12 h-12" /> : <Trophy className="w-12 h-12" />}
         </div>
         <div className="space-y-2">
-          <h1 className="text-4xl font-bold text-stone-900 dark:text-white">{t('play.congrats')}</h1>
-          <p className="text-stone-600 dark:text-stone-300 text-lg">{t('play.congrats_desc')} <span className="font-bold text-emerald-600 dark:text-emerald-400">{game.title}</span></p>
+          <h1 className="text-4xl font-bold text-stone-900 dark:text-white">
+            {isTimeout ? t('play.timeout') || 'Czas minął!' : t('play.congrats')}
+          </h1>
+          <p className="text-stone-600 dark:text-stone-300 text-lg">
+            {isTimeout ? (t('play.timeout_desc') || 'Niestety, nie udało Ci się ukończyć gry w wyznaczonym czasie.') : t('play.congrats_desc')} <span className="font-bold text-emerald-600 dark:text-emerald-400">{game.title}</span>
+          </p>
         </div>
         <button
           onClick={() => navigate("/catalog")}
@@ -244,6 +289,27 @@ export default function PlayGame() {
 
   return (
     <div className="fixed inset-0 bg-stone-100 dark:bg-stone-900 flex flex-col overflow-hidden transition-colors duration-300">
+      {/* Header */}
+      <div className="bg-white dark:bg-stone-900 border-b border-stone-200 dark:border-stone-800 p-4 sticky top-0 z-20 flex items-center justify-between">
+        <div>
+          <h1 className="font-bold text-stone-900 dark:text-white truncate max-w-[200px]">{game.title}</h1>
+          <div className="text-sm text-stone-500 dark:text-stone-400">
+            {t('play.point')} {currentPointIndex + 1} / {game.points.length}
+          </div>
+        </div>
+        
+        {timeRemaining !== null && (
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full font-mono font-bold text-sm ${
+            timeRemaining < 300 
+              ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 animate-pulse' 
+              : 'bg-stone-100 text-stone-700 dark:bg-stone-800 dark:text-stone-300'
+          }`}>
+            <Clock className="w-4 h-4" />
+            {formatTime(timeRemaining)}
+          </div>
+        )}
+      </div>
+
       {/* AR View Background */}
       <AnimatePresence>
         {isARMode && (
@@ -343,9 +409,6 @@ export default function PlayGame() {
                 {currentPointIndex + 1}
               </div>
               <h3 className="font-bold text-stone-900 dark:text-white transition-colors duration-300">{currentPoint.name}</h3>
-            </div>
-            <div className="text-[10px] font-bold text-stone-400 dark:text-stone-500 uppercase tracking-widest transition-colors duration-300">
-              {t('play.point')} {currentPointIndex + 1} {t('play.of')} {game.points.length}
             </div>
           </div>
 

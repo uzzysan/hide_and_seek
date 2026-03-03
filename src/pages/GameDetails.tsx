@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { MapPin, Play, Info, List, Calendar, Trash2, Edit, Star, MessageSquare, Trophy } from "lucide-react";
+import { MapPin, Play, Info, List, Calendar, Trash2, Edit, Star, MessageSquare, Trophy, Clock } from "lucide-react";
 import { useAppContext } from "../contexts/AppContext";
 
 interface Point {
@@ -33,6 +33,7 @@ interface Game {
   reviews?: Review[];
   average_rating?: number;
   reviews_count?: number;
+  time_limit_minutes?: number;
 }
 
 interface LeaderboardEntry {
@@ -182,9 +183,17 @@ export default function GameDetails() {
           <div className="w-full flex justify-between items-end">
             <div className="text-white">
               <h1 className="text-3xl md:text-4xl font-bold mb-2">{game.title}</h1>
-              <div className="flex items-center gap-2 text-sm text-white/80">
-                <Calendar className="w-4 h-4" />
-                <span>{t('details.added')} {new Date(game.created_at).toLocaleDateString(language === 'pl' ? "pl-PL" : "en-US")}</span>
+              <div className="flex flex-wrap items-center gap-4 text-sm text-white/80">
+                <div className="flex items-center gap-2">
+                  <Calendar className="w-4 h-4" />
+                  <span>{t('details.added')} {new Date(game.created_at).toLocaleDateString(language === 'pl' ? "pl-PL" : "en-US")}</span>
+                </div>
+                {game.time_limit_minutes && (
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4" />
+                    <span>{game.time_limit_minutes} min</span>
+                  </div>
+                )}
               </div>
             </div>
             {isCreator && (

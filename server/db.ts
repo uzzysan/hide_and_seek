@@ -82,4 +82,11 @@ try {
   // Column might already exist, ignore error
 }
 
+// Try to add time_limit_minutes to existing games table if it doesn't exist
+try {
+  db.exec("ALTER TABLE games ADD COLUMN time_limit_minutes INTEGER;");
+} catch (e) {
+  // Column might already exist, ignore error
+}
+
 export default db;

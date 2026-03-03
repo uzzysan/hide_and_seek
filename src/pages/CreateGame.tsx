@@ -49,6 +49,7 @@ export default function CreateGame() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [editPassword, setEditPassword] = useState("");
+  const [timeLimitMinutes, setTimeLimitMinutes] = useState("");
   const [gameAttachment, setGameAttachment] = useState<File | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -171,6 +172,9 @@ export default function CreateGame() {
       gameFormData.append("edit_password", editPassword);
       gameFormData.append("latitude", points[0].latitude.toString());
       gameFormData.append("longitude", points[0].longitude.toString());
+      if (timeLimitMinutes) {
+        gameFormData.append("time_limit_minutes", timeLimitMinutes);
+      }
       if (user) {
         gameFormData.append("creator_id", user.id.toString());
       }
@@ -223,7 +227,7 @@ export default function CreateGame() {
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div className="flex-1 space-y-4">
           <h1 className="text-3xl font-bold text-stone-900 dark:text-white">{t('create.title')}</h1>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <input
               required
               placeholder={t('create.title_placeholder')}
@@ -238,6 +242,14 @@ export default function CreateGame() {
               className="w-full px-4 py-3 bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 dark:text-white transition-colors shadow-sm"
               value={editPassword}
               onChange={(e) => setEditPassword(e.target.value)}
+            />
+            <input
+              type="number"
+              min="1"
+              placeholder={t('create.time_limit_placeholder') || 'Limit czasu (minuty, opcjonalnie)'}
+              className="w-full px-4 py-3 bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 dark:text-white transition-colors shadow-sm"
+              value={timeLimitMinutes}
+              onChange={(e) => setTimeLimitMinutes(e.target.value)}
             />
           </div>
           <textarea
